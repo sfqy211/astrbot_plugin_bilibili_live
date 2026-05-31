@@ -7,10 +7,6 @@
         "description": "是否启用",
         "type": "bool"
       },
-      "room_id": {
-        "description": "直播间ID",
-        "type": "int"
-      },
       "cookie_str": {
         "description": "cookie",
         "type": "string"
