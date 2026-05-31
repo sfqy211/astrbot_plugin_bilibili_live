@@ -85,6 +85,11 @@
           }
         }
       },
+      "http_server_port": {
+        "description": "HTTP API 端口（0=随机，供 BiliDanmu 调用）",
+        "type": "int",
+        "default": 0
+      },
       "random_drop": {
         "description": "随机丢弃",
         "type": "object",
