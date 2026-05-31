@@ -25,3 +25,7 @@ class ContextRecord:
     def get_messages(self, sender: str) -> list[dict]:
         """获取消息"""
         return self.message_dict.get(sender, [])
+
+    def clear(self):
+        """清空所有上下文（切房时调用）"""
+        self.message_dict.clear()
