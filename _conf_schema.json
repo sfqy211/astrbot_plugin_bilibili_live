@@ -1,45 +1,19 @@
 {
-  "blivedm_open_live": {
-    "description": "B站开放平台接入",
+  "blivedm_web": {
+    "description": "B站web接入",
     "type": "object",
     "items": {
       "enable": {
         "description": "是否启用",
         "type": "bool"
       },
-      "access_key_id": {
-        "description": "access_key_id",
-        "type": "string"
-      },
-      "access_key_secret": {
-        "description": "access_key_secret",
-        "type": "string"
-      },
-      "app_id": {
-        "description": "app_id",
+      "room_id": {
+        "description": "直播间ID",
         "type": "int"
       },
-      "room_owner_auth_code": {
-        "description": "room_owner_auth_code",
+      "cookie_str": {
+        "description": "cookie",
         "type": "string"
-      }
-    }
-  },
-    "blivedm_web":{
-    "description":"B站web接入",
-    "type":"object",
-    "items":{
-      "enable":{
-        "description":"是否启用",
-        "type":"bool"
-      },
-      "room_id":{
-        "description":"直播间ID",
-        "type":"int"
-      },
-      "cookie_str":{
-        "description":"cookie",
-        "type":"string"
       }
     }
   },
@@ -51,19 +25,6 @@
         "description": "允许的消息类型，以英文半角逗号分隔",
         "type": "string",
         "hint": "danmaku, gift, guard_buy, super_chat, like, enter_room"
-      },
-      "work_mode": {
-        "description": "工作模式",
-        "type": "string",
-        "options": ["forward_only", "llm_chat_forward", "llm_chat_callback"],
-        "hint": "forward_only 为仅转发模式，llm_chat_forward 为 LLM 聊天并转发模式，llm_chat_callback 为 LLM 聊天并回调模式。"
-      },
-      "forward_destinations": {
-        "description": "转发目标(umo)",
-        "type": "list",
-        "items": {
-          "type": "string"
-        }
       },
       "llm_chat_max_context": {
         "description": "LLM 聊天最大上下文长度(*2)",
