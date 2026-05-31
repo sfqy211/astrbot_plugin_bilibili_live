@@ -19,12 +19,7 @@ class BilibiliLive(Star):
         super().__init__(context)
         self.config = config
         self.web_client: Optional[WebClient] = None
-
-        if config["blivedm_web"]["enable"]:
-            self.web_client = WebClient(
-                config["blivedm_web"]["room_id"],
-                cookie_str=config["blivedm_web"]["cookie_str"],
-            )
+        self.cookie_str: str = config["blivedm_web"].get("cookie_str", "")
 
         self.context_rec = ContextRecord(
             max_messages=config["plugin_settings"]["llm_chat_max_context"]
@@ -37,13 +32,10 @@ class BilibiliLive(Star):
         self._switch_lock: Optional[asyncio.Lock] = None
         self._http_runner: Optional[web.AppRunner] = None
         self._http_port: int = 0
-        self._current_room_id: int = config["blivedm_web"]["room_id"] if config["blivedm_web"]["enable"] else 0
+        self._current_room_id: int = 0
 
     async def initialize(self):
-        """初始化"""
-        if self.web_client:
-            self.web_client.start()
-        self._process_task = asyncio.create_task(self._process_messages())
+        """初始化 — 仅启动 HTTP 服务，等待 BiliDanmu 通过 API 切房"""
         await self._start_http_server()
 
     async def _start_http_server(self):
@@ -141,8 +133,7 @@ class BilibiliLive(Star):
 
         self.context_rec.clear()
 
-        cookie_str = self.config["blivedm_web"].get("cookie_str", "")
-        self.web_client = WebClient(new_room_id, cookie_str=cookie_str)
+        self.web_client = WebClient(new_room_id, cookie_str=self.cookie_str)
         self.web_client.start()
         self._current_room_id = new_room_id
         self._process_task = asyncio.create_task(self._process_messages())
@@ -280,6 +271,7 @@ class BilibiliLive(Star):
                 await asyncio.wait_for(self._process_task, timeout=5)
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
-            finally:
-                if self.web_client:
-                    await self.web_client.stop_and_close()
+
+        if self.web_client:
+            await self.web_client.stop_and_close()
+            self.web_client = None
