@@ -23,26 +23,6 @@
         "default": "danmaku, super_chat",
         "hint": "danmaku=弹幕, gift=礼物, super_chat=醒目留言, like=点赞, enter_room=进场, guard_buy=上舰"
       },
-      "llm_chat_max_context": {
-        "description": "LLM 聊天最大上下文长度(*2)",
-        "type": "int",
-        "default": 15
-      },
-      "llm_chat_callback": {
-        "description": "LLM 聊天回调",
-        "type": "object",
-        "items": {
-          "callback_url": {
-            "description": "回调地址",
-            "type": "string"
-          },
-          "callback_method": {
-            "description": "回调方法",
-            "type": "string",
-            "options": ["GET", "POST"]
-          }
-        }
-      },
       "filter_emoticon_only": {
         "description": "过滤纯表情弹幕（整条消息就是一个表情）",
         "type": "bool",
