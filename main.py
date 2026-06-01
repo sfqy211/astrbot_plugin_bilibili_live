@@ -1,5 +1,6 @@
 import asyncio
 import random
+from collections import deque
 from typing import Optional
 
 import aiohttp
@@ -11,6 +12,8 @@ from astrbot.core import AstrBotConfig
 from .blivedm import WebClient
 from .blivedm.models import message as bili_msg
 from .context_rec import ContextRecord
+
+MAX_DANMAKU_BUFFER = 100
 
 
 @register("astrbot_plugin_bilibili_live", "Raven95676", "接入Bilibili直播", "0.3.0")
@@ -28,6 +31,7 @@ class BilibiliLive(Star):
             item.strip().lower()
             for item in self.config["plugin_settings"]["allow_message_type"].split(",")
         }
+        self._danmaku_buffer: deque[str] = deque(maxlen=MAX_DANMAKU_BUFFER)
         self._process_task: asyncio.Task | None = None
         self._switch_lock: Optional[asyncio.Lock] = None
         self._http_runner: Optional[web.AppRunner] = None
@@ -90,15 +94,19 @@ class BilibiliLive(Star):
         try:
             data = await request.json()
             action = data.get("action", "reply")
-            context = data.get("context", "")
 
             if action not in ("reply", "summary"):
                 return web.json_response({"ok": False, "error": "action 只支持 reply 或 summary"}, status=400)
 
+            # 使用插件缓冲区中的弹幕作为上下文
+            recent = "\n".join(self._danmaku_buffer)
+            if not recent:
+                recent = "（暂无弹幕数据）"
+
             if action == "summary":
-                prompt = f"请对以下直播间弹幕进行简短总结（30字以内）：\n{context}"
+                prompt = f"请对以下直播间弹幕内容进行简短总结：\n{recent}"
             else:
-                prompt = f"你是一个直播间观众，请根据以下弹幕内容，用轻松自然的口吻回复（20字以内）：\n{context}"
+                prompt = f"你是一个直播间观众，请根据以下弹幕内容，用轻松自然的口吻回复一条弹幕（20字以内）：\n{recent}"
 
             resp = await self.context.get_using_provider().text_chat(
                 prompt=prompt,
@@ -132,6 +140,7 @@ class BilibiliLive(Star):
             self.web_client = None
 
         self.context_rec.clear()
+        self._danmaku_buffer.clear()
 
         self.web_client = WebClient(new_room_id, cookie_str=self.cookie_str)
         self.web_client.start()
@@ -168,6 +177,8 @@ class BilibiliLive(Star):
             isinstance(message, bili_msg.DanmakuMessage)
             and "danmaku" in self.allow_message_type
         ):
+            # 缓存弹幕用于手动触发
+            self._danmaku_buffer.append(f"{message.user_name}: {message.content}")
             await self._send_message(
                 sender=sender,
                 sender_name=message.user_name,
