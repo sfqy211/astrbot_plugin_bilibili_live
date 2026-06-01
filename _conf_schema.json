@@ -38,6 +38,36 @@
         "type": "int",
         "default": 100
       },
+      "reply_count": {
+        "description": "AI 生成回复数量",
+        "type": "int",
+        "default": 3
+      },
+      "reply_max_length": {
+        "description": "单条回复最大字数",
+        "type": "int",
+        "default": 30
+      },
+      "system_prompt": {
+        "description": "AI 角色/人格设定",
+        "type": "string",
+        "default": "你是一个直播间弹幕助手，风格轻松自然，善于理解和回应直播间观众的互动。"
+      },
+      "summary_template": {
+        "description": "总结提示词模板（{context}=弹幕内容, {prev_summary}=上一次总结）",
+        "type": "string",
+        "default": "请对以下直播间弹幕内容进行简短总结，不要使用 Markdown 格式，直接输出纯文本：\n{context}"
+      },
+      "reply_template": {
+        "description": "回复提示词模板（{context}=弹幕内容, {count}=回复数量, {max_length}=最大字数）",
+        "type": "string",
+        "default": "请根据以下弹幕内容，生成{count}条不同的回复选项。每条回复不超过{max_length}字，风格可以略有不同。请严格按以下格式输出，每行一条，不要编号：\n回复1\n回复2\n回复3\n\n弹幕内容：\n{context}"
+      },
+      "learn_template": {
+        "description": "学习提示词模板（{chosen}=用户选择, {options}=所有选项）",
+        "type": "string",
+        "default": "用户在直播间弹幕互动中，从以下选项中选择了一条回复：\n选项：{options}\n用户选择：{chosen}\n\n请简要分析用户的表达偏好和风格特征（一句话），仅供记忆。"
+      },
       "http_server_port": {
         "description": "HTTP API 端口（0=随机，供 BiliDanmu 调用）",
         "type": "int",
