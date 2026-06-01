@@ -13,7 +13,7 @@ from .blivedm import WebClient
 from .blivedm.models import message as bili_msg
 from .context_rec import ContextRecord
 
-MAX_DANMAKU_BUFFER = 100
+DEFAULT_BUFFER_SIZE = 500
 
 
 @register("astrbot_plugin_bilibili_live", "Raven95676", "接入Bilibili直播", "0.3.0")
@@ -35,7 +35,9 @@ class BilibiliLive(Star):
             for item in raw_types.split(",")
             if item.strip()
         }
-        self._danmaku_buffer: deque[str] = deque(maxlen=MAX_DANMAKU_BUFFER)
+        self.filter_emoticon_only: bool = self.config["plugin_settings"].get("filter_emoticon_only", True)
+        buffer_size = self.config["plugin_settings"].get("buffer_size", DEFAULT_BUFFER_SIZE)
+        self._danmaku_buffer: deque[str] = deque(maxlen=buffer_size)
         self._process_task: asyncio.Task | None = None
         self._switch_lock: Optional[asyncio.Lock] = None
         self._http_runner: Optional[web.AppRunner] = None
@@ -188,9 +190,22 @@ class BilibiliLive(Star):
         msg_type = type(message).__name__
 
         if msg_type == "DanmakuMessage" and "danmaku" in self.allow_message_type:
-            # 缓存弹幕用于手动触发
+            # 过滤纯表情弹幕（dm_type=1）
+            if self.filter_emoticon_only and getattr(message, 'dm_type', 0) == 1:
+                return
             self._danmaku_buffer.append(f"{message.user_name}: {message.content}")
-        # 其他消息类型暂不处理，仅弹幕入缓冲用于手动触发
+        elif msg_type == "GiftMessage" and "gift" in self.allow_message_type:
+            self._danmaku_buffer.append(f"[礼物] {message.user_name} 赠送了 {message.gift_num}个{message.gift_name}")
+        elif msg_type == "SuperChatMessage" and "super_chat" in self.allow_message_type:
+            self._danmaku_buffer.append(f"[醒目留言] {message.user_name}: {message.message}")
+        elif msg_type == "LikeMessage" and "like" in self.allow_message_type:
+            self._danmaku_buffer.append(f"[点赞] {message.user_name}")
+        elif msg_type == "EnterRoomMessage" and "enter_room" in self.allow_message_type:
+            self._danmaku_buffer.append(f"[进场] {message.user_name}")
+        elif msg_type == "GuardBuyMessage" and "guard_buy" in self.allow_message_type:
+            guard_level_names = {1: "总督", 2: "提督", 3: "舰长"}
+            guard_level_name = guard_level_names.get(getattr(message, 'guard_level', 0), "未知")
+            self._danmaku_buffer.append(f"[上舰] {message.user_name} 成为了{guard_level_name}")
 
     async def _send_llm_message(self, sender: str, message: str):
         """处理LLM聊天并更新上下文"""

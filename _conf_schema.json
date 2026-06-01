@@ -18,10 +18,10 @@
     "type": "object",
     "items": {
       "allow_message_type": {
-        "description": "允许的消息类型，以英文半角逗号分隔",
+        "description": "缓存的消息类型（用于手动触发 AI）",
         "type": "string",
-        "default": "danmaku, gift, guard_buy, super_chat, like, enter_room",
-        "hint": "danmaku, gift, guard_buy, super_chat, like, enter_room"
+        "default": "danmaku, super_chat",
+        "hint": "danmaku=弹幕, gift=礼物, super_chat=醒目留言, like=点赞, enter_room=进场, guard_buy=上舰"
       },
       "llm_chat_max_context": {
         "description": "LLM 聊天最大上下文长度(*2)",
@@ -42,6 +42,16 @@
             "options": ["GET", "POST"]
           }
         }
+      },
+      "filter_emoticon_only": {
+        "description": "过滤纯表情弹幕（整条消息就是一个表情）",
+        "type": "bool",
+        "default": true
+      },
+      "buffer_size": {
+        "description": "弹幕缓冲区大小（条数）",
+        "type": "int",
+        "default": 500
       },
       "http_server_port": {
         "description": "HTTP API 端口（0=随机，供 BiliDanmu 调用）",
