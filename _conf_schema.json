@@ -33,6 +33,11 @@
         "type": "int",
         "default": 500
       },
+      "auto_summary_threshold": {
+        "description": "自动总结触发阈值（弹幕条数）",
+        "type": "int",
+        "default": 100
+      },
       "http_server_port": {
         "description": "HTTP API 端口（0=随机，供 BiliDanmu 调用）",
         "type": "int",

@@ -12,6 +12,7 @@ from .blivedm import WebClient
 from .blivedm.models import message as bili_msg
 
 DEFAULT_BUFFER_SIZE = 500
+DEFAULT_AUTO_SUMMARY_THRESHOLD = 50
 
 
 @register("astrbot_plugin_bilibili_live", "Raven95676", "接入Bilibili直播", "0.3.0")
@@ -39,6 +40,13 @@ class BilibiliLive(Star):
         self._http_port: int = 0
         self._current_room_id: int = 0
 
+        # 自动总结
+        self._auto_summary_threshold: int = self.config["plugin_settings"].get(
+            "auto_summary_threshold", DEFAULT_AUTO_SUMMARY_THRESHOLD
+        )
+        self._messages_since_summary: int = 0
+        self._last_summary: str = ""
+
     async def initialize(self):
         """初始化 — 仅启动 HTTP 服务，等待 BiliDanmu 通过 API 切房"""
         await self._start_http_server()
@@ -52,6 +60,7 @@ class BilibiliLive(Star):
         app = web.Application()
         app.router.add_post("/api/switch-room", self._handle_switch_room)
         app.router.add_post("/api/trigger", self._handle_trigger)
+        app.router.add_post("/api/learn", self._handle_learn)
         app.router.add_get("/api/status", self._handle_status)
 
         runner = web.AppRunner(app)
@@ -104,9 +113,15 @@ class BilibiliLive(Star):
                 recent = "（暂无弹幕数据）"
 
             if action == "summary":
-                prompt = f"请对以下直播间弹幕内容进行简短总结：\n{recent}"
+                prompt = self._build_summary_prompt(recent)
             else:
-                prompt = f"你是一个直播间观众，请根据以下弹幕内容，用轻松自然的口吻回复一条弹幕（20字以内）：\n{recent}"
+                prompt = (
+                    "你是一个直播间观众，请根据以下弹幕内容，生成3条不同的回复选项。"
+                    "每条回复不超过20字，风格可以略有不同（如幽默、友好、简短）。"
+                    "请严格按以下格式输出，每行一条，不要编号：\n"
+                    "回复1\n回复2\n回复3\n\n"
+                    f"弹幕内容：\n{recent}"
+                )
 
             logger.info(f"[BiliDanmu] 触发 {action}，缓冲区 {len(self._danmaku_buffer)} 条弹幕")
 
@@ -114,13 +129,90 @@ class BilibiliLive(Star):
                 prompt=prompt,
                 session_id=f"bilidanmu_{self._current_room_id}",
             )
-            reply = resp.result_chain.get_plain_text()
+            raw = resp.result_chain.get_plain_text()
 
-            logger.info(f"[BiliDanmu] AI 回复完成")
-            return web.json_response({"ok": True, "reply": reply})
+            if action == "summary":
+                self._last_summary = raw
+                self._messages_since_summary = 0
+                return web.json_response({"ok": True, "replies": [raw]})
+
+            # 解析多条回复
+            options = [line.strip() for line in raw.strip().splitlines() if line.strip()]
+            if not options:
+                options = [raw.strip()]
+
+            logger.info(f"[BiliDanmu] AI 生成 {len(options)} 条回复")
+            return web.json_response({"ok": True, "replies": options})
         except Exception as e:
             logger.exception("[BiliDanmu] 手动触发失败")
             return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+    async def _handle_learn(self, request):
+        """POST /api/learn — 后台分析用户选择偏好"""
+        try:
+            data = await request.json()
+            chosen = data.get("chosen", "")
+            options = data.get("options", [])
+
+            if not chosen:
+                return web.json_response({"ok": True})
+
+            prompt = (
+                f"用户在直播间弹幕互动中，从以下选项中选择了一条回复：\n"
+                f"选项：{options}\n"
+                f"用户选择：{chosen}\n\n"
+                f"请简要分析用户的表达偏好和风格特征（一句话），仅供记忆。"
+            )
+
+            asyncio.create_task(self._silent_chat(prompt))
+            logger.info("[BiliDanmu] 后台学习已触发")
+            return web.json_response({"ok": True})
+        except Exception as e:
+            logger.error(f"[BiliDanmu] 学习触发失败: {e}")
+            return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+    async def _auto_summary(self):
+        """自动触发总结"""
+        self._messages_since_summary = 0
+        recent = "\n".join(self._danmaku_buffer)
+        if not recent:
+            return
+
+        prompt = self._build_summary_prompt(recent)
+        logger.info(f"[BiliDanmu] 自动总结触发，缓冲区 {len(self._danmaku_buffer)} 条弹幕")
+
+        try:
+            resp = await self.context.get_using_provider().text_chat(
+                prompt=prompt,
+                session_id=f"bilidanmu_{self._current_room_id}",
+            )
+            summary = resp.result_chain.get_plain_text()
+            self._last_summary = summary
+            logger.info("[BiliDanmu] 自动总结完成")
+        except Exception as e:
+            logger.error(f"[BiliDanmu] 自动总结失败: {e}")
+
+    async def _silent_chat(self, prompt: str):
+        """静默调用 LLM，仅更新 session 历史"""
+        try:
+            await self.context.get_using_provider().text_chat(
+                prompt=prompt,
+                session_id=f"bilidanmu_{self._current_room_id}",
+            )
+            logger.info("[BiliDanmu] 后台学习完成")
+        except Exception as e:
+            logger.error(f"[BiliDanmu] 后台学习失败: {e}")
+
+    def _build_summary_prompt(self, recent: str) -> str:
+        """构建总结 prompt，包含上一次总结作为上下文"""
+        if self._last_summary:
+            return (
+                f"请对以下直播间弹幕内容进行简短总结。\n\n"
+                f"【上一次总结】\n{self._last_summary}\n\n"
+                f"【新增弹幕】\n{recent}\n\n"
+                f"请结合上一次总结，对新增弹幕进行增量总结。"
+            )
+        return f"请对以下直播间弹幕内容进行简短总结：\n{recent}"
 
     def _get_lock(self):
         """切房锁"""
@@ -148,6 +240,8 @@ class BilibiliLive(Star):
             self.web_client = None
 
         self._danmaku_buffer.clear()
+        self._messages_since_summary = 0
+        self._last_summary = ""
 
         self.web_client = WebClient(new_room_id, cookie_str=self.cookie_str)
         self.web_client.start()
@@ -188,6 +282,10 @@ class BilibiliLive(Star):
             if self.filter_emoticon_only and getattr(message, 'dm_type', 0) == 1:
                 return
             self._danmaku_buffer.append(f"{message.user_name}: {message.content}")
+            self._messages_since_summary += 1
+            # 达到阈值时自动触发总结
+            if self._messages_since_summary >= self._auto_summary_threshold:
+                asyncio.create_task(self._auto_summary())
         elif msg_type == "GiftMessage" and "gift" in self.allow_message_type:
             self._danmaku_buffer.append(f"[礼物] {message.user_name} 赠送了 {message.gift_num}个{message.gift_name}")
         elif msg_type == "SuperChatMessage" and "super_chat" in self.allow_message_type:
