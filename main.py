@@ -27,9 +27,13 @@ class BilibiliLive(Star):
         self.context_rec = ContextRecord(
             max_messages=config["plugin_settings"]["llm_chat_max_context"]
         )
+        raw_types = self.config["plugin_settings"].get("allow_message_type", "")
+        if not raw_types or not raw_types.strip():
+            raw_types = "danmaku, gift, guard_buy, super_chat, like, enter_room"
         self.allow_message_type = {
             item.strip().lower()
-            for item in self.config["plugin_settings"]["allow_message_type"].split(",")
+            for item in raw_types.split(",")
+            if item.strip()
         }
         self._danmaku_buffer: deque[str] = deque(maxlen=MAX_DANMAKU_BUFFER)
         self._process_task: asyncio.Task | None = None
@@ -98,7 +102,6 @@ class BilibiliLive(Star):
             if action not in ("reply", "summary"):
                 return web.json_response({"ok": False, "error": "action 只支持 reply 或 summary"}, status=400)
 
-            # 使用插件缓冲区中的弹幕作为上下文
             recent = "\n".join(self._danmaku_buffer)
             if not recent:
                 recent = "（暂无弹幕数据）"
@@ -108,15 +111,18 @@ class BilibiliLive(Star):
             else:
                 prompt = f"你是一个直播间观众，请根据以下弹幕内容，用轻松自然的口吻回复一条弹幕（20字以内）：\n{recent}"
 
+            logger.info(f"[BiliDanmu] 触发 {action}，缓冲区 {len(self._danmaku_buffer)} 条弹幕")
+
             resp = await self.context.get_using_provider().text_chat(
                 prompt=prompt,
                 session_id=f"bilidanmu_{self._current_room_id}",
             )
             reply = resp.result_chain.get_plain_text()
 
+            logger.info(f"[BiliDanmu] AI 回复完成")
             return web.json_response({"ok": True, "reply": reply})
         except Exception as e:
-            logger.exception("手动触发失败")
+            logger.exception("[BiliDanmu] 手动触发失败")
             return web.json_response({"ok": False, "error": str(e)}, status=500)
 
     def _get_lock(self):
@@ -127,6 +133,11 @@ class BilibiliLive(Star):
 
     async def _do_switch_room(self, new_room_id: int):
         """执行房间切换"""
+        # 如果已经在同一个房间，跳过
+        if self._current_room_id == new_room_id and self.web_client is not None and self.web_client.is_running:
+            logger.info(f"[BiliDanmu] 已在房间 {new_room_id}，跳过重复切换")
+            return
+
         if self._process_task:
             self._process_task.cancel()
             try:
@@ -147,14 +158,18 @@ class BilibiliLive(Star):
         self._current_room_id = new_room_id
         self._process_task = asyncio.create_task(self._process_messages())
 
-        logger.info(f"已切换到直播间 {new_room_id}")
+        logger.info(f"[BiliDanmu] 已切换到直播间 {new_room_id}")
 
     async def _process_messages(self):
         """获取消息并处理"""
         if self.web_client:
+            await asyncio.sleep(2)
             async for message in self.web_client.get_messages():
-                await asyncio.sleep(0.8)
-                await self._handle_message(message)
+                try:
+                    await asyncio.sleep(0.8)
+                    await self._handle_message(message)
+                except Exception as e:
+                    logger.error(f"[BiliDanmu] 处理消息异常: {e}", exc_info=True)
 
     @staticmethod
     def _get_sender_id(message):
@@ -168,69 +183,14 @@ class BilibiliLive(Star):
                 random.random()
                 < self.config["plugin_settings"]["random_drop"]["drop_rate"]
             ):
-                logger.debug("Drop message")
                 return
 
-        sender = self._get_sender_id(message)
+        msg_type = type(message).__name__
 
-        if (
-            isinstance(message, bili_msg.DanmakuMessage)
-            and "danmaku" in self.allow_message_type
-        ):
+        if msg_type == "DanmakuMessage" and "danmaku" in self.allow_message_type:
             # 缓存弹幕用于手动触发
             self._danmaku_buffer.append(f"{message.user_name}: {message.content}")
-            await self._send_message(
-                sender=sender,
-                sender_name=message.user_name,
-                message=f"[弹幕] {message.user_name}({message.user_id})说: {message.content}",
-            )
-        elif (
-            isinstance(message, bili_msg.GiftMessage)
-            and "gift" in self.allow_message_type
-        ):
-            await self._send_message(
-                sender=sender,
-                sender_name=message.user_name,
-                message=f"[礼物] {message.user_name}({message.user_id})赠送了{message.gift_num}个{message.gift_name}",
-            )
-        elif (
-            isinstance(message, bili_msg.SuperChatMessage)
-            and "super_chat" in self.allow_message_type
-        ):
-            await self._send_message(
-                sender=sender,
-                sender_name=message.user_name,
-                message=f"[醒目留言] {message.user_name}({message.user_id})说: {message.message}",
-            )
-        elif (
-            isinstance(message, bili_msg.LikeMessage)
-            and "like" in self.allow_message_type
-        ):
-            await self._send_message(
-                sender=sender,
-                sender_name=message.user_name,
-                message=f"[点赞] {message.user_name}({message.user_id})点赞了",
-            )
-        elif (
-            isinstance(message, bili_msg.EnterRoomMessage)
-            and "enter_room" in self.allow_message_type
-        ):
-            await self._send_message(
-                sender=sender,
-                sender_name=message.user_name,
-                message=f"[进入直播间] {message.user_name}({message.user_id})进入了直播间",
-            )
-        elif (
-            isinstance(message, bili_msg.GuardBuyMessage)
-            and "guard_buy" in self.allow_message_type
-        ):
-            guard_level_names = {1: "总督", 2: "提督", 3: "舰长"}
-            guard_level_name = guard_level_names.get(message.guard_level, "未知")
-            await self._send_message(
-                sender=sender,
-                sender_name=message.user_name,
-                message=f"[上舰] {message.user_name}({message.user_id})成为了{guard_level_name}",
-            )
+        # 其他消息类型暂不处理，仅弹幕入缓冲用于手动触发
 
     async def _send_llm_message(self, sender: str, message: str):
         """处理LLM聊天并更新上下文"""

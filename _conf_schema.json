@@ -20,6 +20,7 @@
       "allow_message_type": {
         "description": "允许的消息类型，以英文半角逗号分隔",
         "type": "string",
+        "default": "danmaku, gift, guard_buy, super_chat, like, enter_room",
         "hint": "danmaku, gift, guard_buy, super_chat, like, enter_room"
       },
       "llm_chat_max_context": {
