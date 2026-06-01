@@ -3,7 +3,6 @@ import random
 from collections import deque
 from typing import Optional
 
-import aiohttp
 from aiohttp import web
 
 from astrbot.api import logger
@@ -11,7 +10,6 @@ from astrbot.api.star import Context, Star, register
 from astrbot.core import AstrBotConfig
 from .blivedm import WebClient
 from .blivedm.models import message as bili_msg
-from .context_rec import ContextRecord
 
 DEFAULT_BUFFER_SIZE = 500
 
@@ -24,9 +22,6 @@ class BilibiliLive(Star):
         self.web_client: Optional[WebClient] = None
         self.cookie_str: str = config["blivedm_web"].get("cookie_str", "")
 
-        self.context_rec = ContextRecord(
-            max_messages=config["plugin_settings"]["llm_chat_max_context"]
-        )
         raw_types = self.config["plugin_settings"].get("allow_message_type", "")
         if not raw_types or not raw_types.strip():
             raw_types = "danmaku, gift, guard_buy, super_chat, like, enter_room"
@@ -152,7 +147,6 @@ class BilibiliLive(Star):
             await self.web_client.stop_and_close()
             self.web_client = None
 
-        self.context_rec.clear()
         self._danmaku_buffer.clear()
 
         self.web_client = WebClient(new_room_id, cookie_str=self.cookie_str)
@@ -206,44 +200,6 @@ class BilibiliLive(Star):
             guard_level_names = {1: "总督", 2: "提督", 3: "舰长"}
             guard_level_name = guard_level_names.get(getattr(message, 'guard_level', 0), "未知")
             self._danmaku_buffer.append(f"[上舰] {message.user_name} 成为了{guard_level_name}")
-
-    async def _send_llm_message(self, sender: str, message: str):
-        """处理LLM聊天并更新上下文"""
-        resp = await self.context.get_using_provider().text_chat(
-            prompt=message,
-            session_id=None,
-            contexts=self.context_rec.get_messages(sender),
-        )
-        self.context_rec.put_message(sender, message, False)
-        self.context_rec.put_message(sender, resp.result_chain.get_plain_text(), True)
-        logger.debug(f"LLM Context: {self.context_rec.get_messages(sender)}")
-        return resp
-
-    async def _send_message(self, sender: str, sender_name: str, message: str):
-        """发送消息（回调模式）"""
-        logger.debug(f"bilibili_live message: {message}")
-
-        callback_url = self.config["plugin_settings"]["llm_chat_callback"]["callback_url"]
-        callback_method = self.config["plugin_settings"]["llm_chat_callback"]["callback_method"]
-
-        resp = await self._send_llm_message(sender, message)
-
-        payload = {
-            "room_id": self._current_room_id,
-            "sender": sender,
-            "sender_name": sender_name,
-            "message": resp.result_chain.get_plain_text(),
-        }
-
-        async with aiohttp.ClientSession() as session:
-            if callback_method == "GET":
-                async with session.get(callback_url, params=payload) as r:
-                    if r.status != 200:
-                        logger.error(f"回调失败: {r.status}, {await r.text()}")
-            else:
-                async with session.post(callback_url, json=payload) as r:
-                    if r.status != 200:
-                        logger.error(f"回调失败: {r.status}, {await r.text()}")
 
     async def terminate(self):
         """清理资源"""
