@@ -43,6 +43,8 @@ class BilibiliLive(Star):
         self._http_port: int = 0
         self._current_room_id: int = 0
         self._callback_url: str = ""
+        self._uname: str = ""
+        self._title: str = ""
 
         # 自动总结
         self._auto_summary_threshold: int = self.config["plugin_settings"].get(
@@ -50,6 +52,15 @@ class BilibiliLive(Star):
         )
         self._messages_since_summary: int = 0
         self._last_summary: str = ""
+
+        # 提示词配置
+        ps = self.config["plugin_settings"]
+        self._reply_count: int = ps.get("reply_count", 3)
+        self._reply_max_length: int = ps.get("reply_max_length", 30)
+        self._system_prompt: str = ps.get("system_prompt", "")
+        self._summary_template: str = ps.get("summary_template", "请对以下直播间弹幕内容进行简短总结：\n{context}")
+        self._reply_template: str = ps.get("reply_template", "请根据以下弹幕内容，生成{count}条不同的回复选项。每条回复不超过{max_length}字。请严格按以下格式输出，每行一条，不要编号：\n回复1\n回复2\n回复3\n\n弹幕内容：\n{context}")
+        self._learn_template: str = ps.get("learn_template", "用户从以下选项中选择了一条回复：\n选项：{options}\n用户选择：{chosen}\n\n请简要分析用户的表达偏好（一句话），仅供记忆。")
 
     async def initialize(self):
         """初始化 — 仅启动 HTTP 服务，等待 BiliDanmu 通过 API 切房"""
@@ -106,6 +117,10 @@ class BilibiliLive(Star):
             if callback_url:
                 self._callback_url = callback_url
 
+            # 存储房间信息
+            self._uname = data.get("uname", "")
+            self._title = data.get("title", "")
+
             async with self._get_lock():
                 await self._do_switch_room(new_room_id)
 
@@ -160,13 +175,7 @@ class BilibiliLive(Star):
             if action == "summary":
                 prompt = self._build_summary_prompt(recent)
             else:
-                prompt = (
-                    "你是一个直播间观众，请根据以下弹幕内容，生成3条不同的回复选项。"
-                    "每条回复不超过30字，风格可以略有不同（如幽默、友好、简短）。"
-                    "请严格按以下格式输出，每行一条，不要编号：\n"
-                    "回复1\n回复2\n回复3\n\n"
-                    f"弹幕内容：\n{recent}"
-                )
+                prompt = self._build_reply_prompt(recent)
 
             resp = await self.context.get_using_provider().text_chat(
                 prompt=prompt,
@@ -201,11 +210,9 @@ class BilibiliLive(Star):
             if not chosen:
                 return web.json_response({"ok": True})
 
-            prompt = (
-                f"用户在直播间弹幕互动中，从以下选项中选择了一条回复：\n"
-                f"选项：{options}\n"
-                f"用户选择：{chosen}\n\n"
-                f"请简要分析用户的表达偏好和风格特征（一句话），仅供记忆。"
+            prompt = self._learn_template.format(
+                chosen=chosen,
+                options=options,
             )
 
             asyncio.create_task(self._silent_chat(prompt))
@@ -254,26 +261,52 @@ class BilibiliLive(Star):
             logger.error(f"[BiliDanmu] 自动总结失败: {e}")
 
     async def _silent_chat(self, prompt: str):
-        """静默调用 LLM，仅更新 session 历史"""
+        """静默调用 LLM，写入全局 session（跨房间共享）"""
         try:
             await self.context.get_using_provider().text_chat(
                 prompt=prompt,
-                session_id=f"bilidanmu_{self._current_room_id}",
+                session_id="bilidanmu_global",
             )
             logger.info("[BiliDanmu] 后台学习完成")
         except Exception as e:
             logger.error(f"[BiliDanmu] 后台学习失败: {e}")
 
+    def _room_prefix(self) -> str:
+        """构建房间信息前缀"""
+        parts = []
+        if self._uname:
+            parts.append(f"主播：{self._uname}")
+        if self._title:
+            parts.append(f"直播间标题：{self._title}")
+        return " | ".join(parts) if parts else ""
+
     def _build_summary_prompt(self, recent: str) -> str:
         """构建总结 prompt，包含上一次总结作为上下文"""
+        context = recent
         if self._last_summary:
-            return (
-                f"请对以下直播间弹幕内容进行简短总结。\n\n"
-                f"【上一次总结】\n{self._last_summary}\n\n"
-                f"【新增弹幕】\n{recent}\n\n"
-                f"请结合上一次总结，对新增弹幕进行增量总结。"
-            )
-        return f"请对以下直播间弹幕内容进行简短总结：\n{recent}"
+            context = f"【上一次总结】\n{self._last_summary}\n\n【新增弹幕】\n{recent}"
+
+        prompt = self._summary_template.format(context=context)
+        prefix = self._room_prefix()
+        if prefix:
+            prompt = f"{prefix}\n\n{prompt}"
+        if self._system_prompt:
+            prompt = f"{self._system_prompt}\n\n{prompt}"
+        return prompt
+
+    def _build_reply_prompt(self, recent: str) -> str:
+        """构建回复 prompt"""
+        prompt = self._reply_template.format(
+            context=recent,
+            count=self._reply_count,
+            max_length=self._reply_max_length,
+        )
+        prefix = self._room_prefix()
+        if prefix:
+            prompt = f"{prefix}\n\n{prompt}"
+        if self._system_prompt:
+            prompt = f"{self._system_prompt}\n\n{prompt}"
+        return prompt
 
     def _get_lock(self):
         """切房锁"""
