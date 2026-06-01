@@ -3,6 +3,7 @@ import random
 from collections import deque
 from typing import Optional
 
+import aiohttp
 from aiohttp import web
 
 from astrbot.api import logger
@@ -41,6 +42,7 @@ class BilibiliLive(Star):
         self._http_runner: Optional[web.AppRunner] = None
         self._http_port: int = 0
         self._current_room_id: int = 0
+        self._callback_url: str = ""
 
         # 自动总结
         self._auto_summary_threshold: int = self.config["plugin_settings"].get(
@@ -61,6 +63,7 @@ class BilibiliLive(Star):
 
         app = web.Application()
         app.router.add_post("/api/switch-room", self._handle_switch_room)
+        app.router.add_post("/api/disconnect", self._handle_disconnect)
         app.router.add_post("/api/trigger", self._handle_trigger)
         app.router.add_post("/api/learn", self._handle_learn)
         app.router.add_get("/api/status", self._handle_status)
@@ -98,12 +101,45 @@ class BilibiliLive(Star):
                     {"ok": False, "error": "room_id 必须是整数"}, status=400
                 )
 
+            # 存储回调地址（BiliDanmu 用于接收自动总结等结果）
+            callback_url = data.get("callback_url", "")
+            if callback_url:
+                self._callback_url = callback_url
+
             async with self._get_lock():
                 await self._do_switch_room(new_room_id)
 
             return web.json_response({"ok": True, "room_id": new_room_id})
         except Exception as e:
             logger.exception("切换房间失败")
+            return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+    async def _handle_disconnect(self, request):
+        """POST /api/disconnect — 断开当前直播间"""
+        try:
+            async with self._get_lock():
+                if self._process_task:
+                    self._process_task.cancel()
+                    try:
+                        await asyncio.wait_for(self._process_task, timeout=5)
+                    except (asyncio.CancelledError, asyncio.TimeoutError):
+                        pass
+                    self._process_task = None
+
+                if self.web_client:
+                    await self.web_client.stop_and_close()
+                    self.web_client = None
+
+                self._danmaku_buffer.clear()
+                self._messages_since_summary = 0
+                self._last_summary = ""
+                self._current_room_id = 0
+                self._callback_url = ""
+
+            logger.info("[BiliDanmu] 已断开连接")
+            return web.json_response({"ok": True})
+        except Exception as e:
+            logger.exception("断开连接失败")
             return web.json_response({"ok": False, "error": str(e)}, status=500)
 
     async def _handle_trigger(self, request):
@@ -132,10 +168,6 @@ class BilibiliLive(Star):
                     f"弹幕内容：\n{recent}"
                 )
 
-            logger.info(
-                f"[BiliDanmu] 触发 {action}，缓冲区 {len(self._danmaku_buffer)} 条弹幕"
-            )
-
             resp = await self.context.get_using_provider().text_chat(
                 prompt=prompt,
                 session_id=f"bilidanmu_{self._current_room_id}",
@@ -154,7 +186,6 @@ class BilibiliLive(Star):
             if not options:
                 options = [raw.strip()]
 
-            logger.info(f"[BiliDanmu] AI 生成 {len(options)} 条回复")
             return web.json_response({"ok": True, "replies": options})
         except Exception as e:
             logger.exception("[BiliDanmu] 手动触发失败")
@@ -192,9 +223,6 @@ class BilibiliLive(Star):
             return
 
         prompt = self._build_summary_prompt(recent)
-        logger.info(
-            f"[BiliDanmu] 自动总结触发，缓冲区 {len(self._danmaku_buffer)} 条弹幕"
-        )
 
         try:
             resp = await self.context.get_using_provider().text_chat(
@@ -203,7 +231,25 @@ class BilibiliLive(Star):
             )
             summary = resp.result_chain.get_plain_text()
             self._last_summary = summary
-            logger.info("[BiliDanmu] 自动总结完成")
+
+            # 回传给 BiliDanmu
+            if self._callback_url:
+                try:
+                    import time
+                    async with aiohttp.ClientSession() as session:
+                        payload = {
+                            "type": "summary",
+                            "roomId": self._current_room_id,
+                            "message": summary,
+                            "timestamp": int(time.time()),
+                        }
+                        async with session.post(self._callback_url, json=payload) as r:
+                            if r.status != 200:
+                                logger.error(f"[BiliDanmu] 回传失败: {r.status}")
+                except Exception as e:
+                    logger.error(f"[BiliDanmu] 回传异常: {e}")
+            else:
+                logger.warning("[BiliDanmu] callback_url 为空，跳过回传")
         except Exception as e:
             logger.error(f"[BiliDanmu] 自动总结失败: {e}")
 
@@ -243,7 +289,6 @@ class BilibiliLive(Star):
             and self.web_client is not None
             and self.web_client.is_running
         ):
-            logger.info(f"[BiliDanmu] 已在房间 {new_room_id}，跳过重复切换")
             return
 
         if self._process_task:
